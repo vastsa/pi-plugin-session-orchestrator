@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "pi.session-orchestrator",
   "name": "Session Orchestrator",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Coordinate durable PI-Desktop sessions with bidirectional messages, host-owned completion notifications, reliable results, and configured model selection.",
   "i18n": {
     "en": {
@@ -21,7 +21,7 @@
     "developer-tools",
     "official"
   ],
-  "changelog": "Release 0.5.0: discovers existing independent Agent sessions through the host-backed list action while retaining legacy worker references and bidirectional messaging.\nRelease 0.4.0: moves delivery, completion callbacks and turn-bound results to the host; enables bidirectional messaging by real Session ID; resolves configured models by key, alias, family or reasoning intent; retains recent references without using them as authorization; fixes panel Stop and cancellable wait deadlines.",
+  "changelog": "Release 0.5.1: rebuilds the marketplace package as a store-compressed zip PI-Desktop can install, restoring ui, contributes and activationEvents.\nRelease 0.5.0: discovers existing independent Agent sessions through the host-backed list action while retaining legacy worker references and bidirectional messaging.\nRelease 0.4.0: moves delivery, completion callbacks and turn-bound results to the host; enables bidirectional messaging by real Session ID; resolves configured models by key, alias, family or reasoning intent; retains recent references without using them as authorization; fixes panel Stop and cancellable wait deadlines.",
   "safetyNotes": "This high-risk tool can create sessions, read session collaboration summaries and results, send messages that run the target Agent, and cancel collaboration work through desktop.control. Messages can address any existing Session ID and may consume configured model quota. The host binds the sender, preserves existing target configuration and permissions, labels session messages separately from user input, and bounds autonomous creation and callbacks. Plugin history never grants access. The plugin has no network permission and never deletes sessions or reads credentials.",
   "main": "main.js",
   "ui": {
