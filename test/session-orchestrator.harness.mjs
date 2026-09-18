@@ -84,7 +84,6 @@ export function makeHarness({ initialSettings, models } = {}) {
       registerTool: async (tool) => { registered.tool = tool; },
       unregisterTool: async () => { registered.tool = null; },
     },
-    ui: { openPanel: async () => undefined },
     models: { list: async () => { harness.modelReads += 1; return clone(harness.models); } },
     desktop: {
       listOperations: async () => clone(harness.operations),

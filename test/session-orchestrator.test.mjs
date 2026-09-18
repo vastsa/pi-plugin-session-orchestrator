@@ -9,10 +9,10 @@ const rejectsCode = (code) => (error) => error.code === code;
 
 test("manifest and registration share the bounded reviewed tool schema", async (t) => {
   const h = await loadHarness(t);
-  assert.equal(manifest.version, "0.5.1");
+  assert.equal(manifest.version, "0.6.0");
   assert.equal(manifest.schemaVersion, 1);
   assert.equal(manifest.id, "pi.session-orchestrator");
-  assert.deepEqual(manifest.permissions, ["ui.panel", "agent.tool.register", "desktop.control", "models.list"]);
+  assert.deepEqual(manifest.permissions, ["agent.tool.register", "desktop.control", "models.list"]);
   const descriptor = manifest.contributes.agentTools[0];
   assert.deepEqual(h.registered.tool.schema, descriptor.schema);
   assert.equal(h.registered.tool.description, descriptor.description);
@@ -27,8 +27,12 @@ test("manifest and registration share the bounded reviewed tool schema", async (
   assert.equal(descriptor.schema.properties.note.maxLength, 4_096);
   assert.equal(descriptor.schema.additionalProperties, false);
   assert.match(manifest.engines.piDesktop, /^>=0\.14\.7/);
-  assert.equal(h.registered.command.id, "pi.session-orchestrator.open");
+
+  assert.equal("ui" in manifest, false);
+  assert.equal("commands" in manifest.contributes, false);
+  assert.equal(h.registered.command, null);
 });
+
 
 test("parallel spawn uses atomic host deliveries, model eligibility and original Session IDs", async (t) => {
   const h = await loadHarness(t);
@@ -175,19 +179,18 @@ test("a concurrent follow-up cannot redirect acceptance to the new delivery", as
   assert.equal(h.settings.acceptances.some((entry) => entry.messageId === second.messageId), false);
 });
 
-test("panel Stop and Open address the original Session ID without a relationship guard", async (t) => {
+test("cancel addresses the original Session ID without a relationship guard", async (t) => {
   const h = await loadHarness(t);
   const receipt = await h.execute({ action: "send", sessionId: "existing", message: "Long task" });
-  const cancelled = await h.main.onPanelInvoke("workers.cancel", { sessionId: "existing" });
+  const cancelled = await h.execute({ action: "cancel", sessionId: "existing" });
   assert.equal(cancelled.cancelled, true);
   assert.equal(cancelled.sessionRetained, true);
   assert.equal(h.messages.get(receipt.messageId).status, "cancelled");
   assert.equal(h.calls.filter((entry) => entry.operation === prefix + "cancel").length, 1);
-  await h.main.onPanelInvoke("workers.open", { sessionId: "peer" });
-  assert.deepEqual(h.calls.at(-1), { operation: "session/open", args: ["peer"] });
   assert.ok(h.sessions.has("existing"));
   assert.equal(h.calls.some((entry) => entry.operation.includes("delete")), false);
 });
+
 
 test("wait observes its whole deadline even when a host status read never settles", async (t) => {
   const h = await loadHarness(t);
@@ -274,7 +277,7 @@ test("older hosts fail with a capability error before any untracked creation", a
   h.operations = [{ id: "session/create" }, { id: "agent/prompt" }];
   await assert.rejects(h.execute({ action: "spawn", task: "Must not start" }), (error) =>
     error.code === "UNSUPPORTED" && /Update PI-Desktop/.test(error.message));
-  await assert.rejects(h.main.onPanelInvoke("workers.list"), rejectsCode("UNSUPPORTED"));
+
   assert.equal(h.calls.length, 0);
   assert.equal(h.modelReads, 0);
 });
@@ -334,16 +337,6 @@ test("pruning recent references never prevents addressing a known real Session I
   assert.equal(sent.sessionId, "existing");
   assert.equal(h.settings.sessions.length, 256);
   assert.equal(h.messages.get(sent.messageId).sourceSessionId, "other");
-});
-
-test("panel keeps usable rows when one recent session no longer exists", async (t) => {
-  const h = await loadHarness(t, { initialSettings: { version: 3, sessions: [
-    { sessionId: "existing", title: "Existing", referencedBy: ["parent"] },
-    { sessionId: "gone", title: "Gone", referencedBy: ["parent"] },
-  ] } });
-  const listed = await h.main.onPanelInvoke("workers.list");
-  assert.equal(listed.workers.find((entry) => entry.sessionId === "gone").status, "unavailable");
-  assert.equal(listed.workers.find((entry) => entry.sessionId === "existing").status, "idle");
 });
 
 test("conflicting legacy aliases, invalid inputs, and mismatched host results fail closed", async (t) => {

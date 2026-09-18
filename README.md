@@ -108,18 +108,11 @@ Old cached statuses, reports, rounds and acceptance markers are retired because
 they cannot prove a host delivery's outcome. Existing sessions are preserved.
 Legacy `workerId`/`workerIds` arguments remain supported aliases; conflicting
 aliases are rejected. Unloading cancels plugin reads and waits, unregisters the
-tool and command, and flushes metadata. Host-owned work and callbacks remain
-owned by the host.
+tool, and flushes metadata. Host-owned work and callbacks remain owned by the
+host.
 
-## Agents panel
-
-The panel shows recent Session IDs, host status, creation/task source, and
-bounded recent exchanges. Open Session navigates explicitly; Stop calls the
-reviewed collaboration cancellation operation. Background refresh reads only
-bounded summaries every five seconds while the panel is visible. One missing
-or inaccessible session does not hide other references. Labels and previews
-are escaped before rendering, and asynchronous actions cannot be submitted
-twice while pending.
+This plugin has no standalone window. Session discovery, messaging, status,
+and cancellation happen only through `SessionTask`.
 
 ## Host compatibility and security
 
@@ -127,14 +120,12 @@ The manifest retains `engines.piDesktop >=0.14.7`, but version alone does not
 prove this additive capability exists. Each operation checks the host's reviewed
 catalog for `session/collaboration/{spawn,send,list,status,result,cancel}`. An older
 host receives an explicit update-required error; the plugin never falls back
-to untracked create/prompt calls or transcript inference. `session/open` is
-checked independently.
+to untracked create/prompt calls or transcript inference.
 
 | Capability | Data and boundary |
 | --- | --- |
-| `desktop.control` | Creates sessions, exchanges messages, reads collaboration summaries/results, cancels work, and explicitly opens sessions. The host binds the sender to the current Agent tool invocation, enforces permissions and bounded creation, and labels provenance. Messages can consume configured model quota. |
+| `desktop.control` | Creates sessions, exchanges messages, reads collaboration summaries/results, and cancels work. The host binds the sender to the current Agent tool invocation, enforces permissions and bounded creation, and labels provenance. Messages can consume configured model quota. |
 | `models.list` | Reads ready configured model identifiers, aliases, delegation flags and reasoning metadata; no credentials. |
-| `ui.panel` | Displays bounded summaries through the isolated plugin bridge; local Stop/Open actions remain host-authorized. |
 | Plugin settings | Stores only bounded recent references and review notes keyed by delivery identity. Never grants access or represents execution truth. |
 
 The high-risk grant allows bidirectional communication with any existing

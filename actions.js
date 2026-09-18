@@ -279,32 +279,8 @@ function createActions(runtime) {
     }
   }
 
-  async function panelList() {
-    await runtime.ensureOperation(PREFIX + "status");
-    const refs = store.list(undefined, 50);
-    const settled = await Promise.allSettled(refs.map((entry) => readStatus(entry.sessionId)));
-    runtime.assertActive();
-    return {
-      workers: settled.map((entry, index) => entry.status === "fulfilled" ? entry.value : {
-        sessionId: refs[index].sessionId, title: refs[index].title, status: "unavailable",
-        error: String(entry.reason?.message || entry.reason), recentExchanges: [],
-      }),
-    };
-  }
-
-  async function panelCancel(payload) {
-    const sessionId = targetSessionId(payload);
-    const cancelled = await runtime.call("cancel", { sessionId }, { read: false });
-    return { ok: true, ...cancelled };
-  }
-
-  async function panelOpen(payload) {
-    const sessionId = targetSessionId(payload);
-    await runtime.invoke("session/open", sessionId, { read: false });
-    return { ok: true, sessionId };
-  }
-
-  return { execute, panelList, panelCancel, panelOpen };
+  return { execute };
 }
+
 
 module.exports = { createActions };
