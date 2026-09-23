@@ -9,7 +9,7 @@ const rejectsCode = (code) => (error) => error.code === code;
 
 test("manifest and registration share the bounded reviewed tool schema", async (t) => {
   const h = await loadHarness(t);
-  assert.equal(manifest.version, "0.6.0");
+  assert.equal(manifest.version, "0.7.0");
   assert.equal(manifest.schemaVersion, 1);
   assert.equal(manifest.id, "pi.session-orchestrator");
   assert.deepEqual(manifest.permissions, ["agent.tool.register", "desktop.control", "models.list"]);
@@ -24,6 +24,7 @@ test("manifest and registration share the bounded reviewed tool schema", async (
     assert.ok(manifest.i18n[locale].safetyNotes);
   }
   assert.equal(descriptor.schema.properties.timeoutMs.maximum, 45_000);
+  assert.match(descriptor.schema.properties.notifyOnCompletion.description, /Default false/);
   assert.equal(descriptor.schema.properties.note.maxLength, 4_096);
   assert.equal(descriptor.schema.additionalProperties, false);
   assert.match(manifest.engines.piDesktop, /^>=0\.14\.7/);
@@ -65,7 +66,7 @@ test("parallel spawn uses atomic host deliveries, model eligibility and original
   assert.equal(h.settings.sessions.some((entry) => "status" in entry || "report" in entry), false);
   const callCount = h.calls.length;
   await delay(30);
-  assert.equal(h.calls.length, callCount, "automatic notifications require no plugin polling");
+  assert.equal(h.calls.length, callCount, "pull mode never polls in the background");
 });
 
 test("any existing session supports bidirectional messages without reselecting models", async (t) => {
@@ -191,6 +192,70 @@ test("cancel addresses the original Session ID without a relationship guard", as
   assert.equal(h.calls.some((entry) => entry.operation.includes("delete")), false);
 });
 
+
+test("new deliveries default to pull mode and push callbacks require explicit opt-in", async (t) => {
+  const h = await loadHarness(t);
+  const pulledSpawn = await h.execute({ action: "spawn", task: "Pull the result when ready" });
+  assert.equal(h.messages.get(pulledSpawn.messageId).notifyOnCompletion, false);
+  assert.equal(h.calls.find((call) => call.operation === prefix + "spawn").args[0].notifyOnCompletion, false);
+  const pushedSpawn = await h.execute({ action: "spawn", task: "Use callback mode", notifyOnCompletion: true });
+  assert.equal(h.messages.get(pushedSpawn.messageId).notifyOnCompletion, true);
+  const pulledSend = await h.execute({ action: "send", sessionId: "existing", message: "Pull mode" });
+  assert.equal(h.messages.get(pulledSend.messageId).notifyOnCompletion, false);
+  const pushedSend = await h.execute({ action: "send", sessionId: "existing", message: "Push mode", notifyOnCompletion: true });
+  assert.equal(h.messages.get(pushedSend.messageId).notifyOnCompletion, true);
+  const pulledBatch = await h.execute({ action: "supervise", sessionIds: ["existing", "peer"], message: "Pull batch" });
+  assert.ok(pulledBatch.workers.every((entry) => h.messages.get(entry.messageId).notifyOnCompletion === false));
+  const pushedBatch = await h.execute({ action: "supervise", sessionIds: ["existing", "peer"], message: "Push batch", notifyOnCompletion: true });
+  assert.ok(pushedBatch.workers.every((entry) => h.messages.get(entry.messageId).notifyOnCompletion === true));
+});
+
+test("exact wait keeps polling when a terminal-looking result is not ready", async (t) => {
+  const h = await loadHarness(t);
+  const receipt = await h.execute({ action: "send", sessionId: "existing", message: "Wait for settled data" });
+  h.complete(receipt.messageId, "Not yet committed");
+  h.beforeInvoke = ({ operation, args }) => operation === prefix + "result"
+    ? { ready: false, message: clone(h.messages.get(args[0].messageId)) } : undefined;
+  const waited = await h.execute({ action: "wait", sessionId: "existing", messageId: receipt.messageId, timeoutMs: 20 });
+  assert.equal(waited.timedOut, true);
+});
+
+test("session wait does not report success until each delivery result is ready", async (t) => {
+  const h = await loadHarness(t);
+  const receipt = await h.execute({ action: "send", sessionId: "existing", message: "Wait for committed data" });
+  h.complete(receipt.messageId, "Not yet committed");
+  h.beforeInvoke = ({ operation, args }) => operation === prefix + "result"
+    ? { ready: false, message: clone(h.messages.get(receipt.messageId)) } : undefined;
+  const waited = await h.execute({ action: "wait", sessionId: "existing", timeoutMs: 20 });
+  assert.equal(waited.timedOut, true);
+});
+
+test("explicit wait retries a slow host read until the overall deadline", async (t) => {
+  const h = await loadHarness(t);
+  const blocked = deferred();
+  const entered = deferred();
+  h.beforeInvoke = ({ operation }) => {
+    if (operation === prefix + "result") { entered.resolve(); return blocked.promise; }
+  };
+  const waiting = h.execute({ action: "wait", sessionId: "existing", messageId: "delivery", timeoutMs: 6_000 });
+  await entered.promise;
+  const result = await waiting;
+  assert.equal(result.timedOut, true);
+  blocked.resolve(undefined);
+});
+
+
+
+test("wait propagates a host TIMEOUT instead of misreporting a local wait timeout", async (t) => {
+  const h = await loadHarness(t);
+  h.beforeInvoke = ({ operation }) => {
+    if (operation === prefix + "result") throw Object.assign(new Error("host read timed out"), { code: "TIMEOUT" });
+  };
+  await assert.rejects(
+    h.execute({ action: "wait", sessionId: "existing", messageId: "delivery", timeoutMs: 1_000 }),
+    (error) => error.code === "TIMEOUT" && error.message === "host read timed out",
+  );
+});
 
 test("wait observes its whole deadline even when a host status read never settles", async (t) => {
   const h = await loadHarness(t);

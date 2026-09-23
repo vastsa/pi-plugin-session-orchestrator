@@ -95,7 +95,7 @@ function createRuntime(store, api = pi) {
     const remaining = deadline === undefined ? timeoutMs : deadline - Date.now();
     const budget = Math.min(timeoutMs, remaining);
     const timeoutCode = deadline !== undefined && remaining <= timeoutMs ? "WAIT_TIMEOUT" : "TIMEOUT";
-    if (budget <= 0) return Promise.reject(taskError(timeoutCode, "Session Orchestrator read timed out"));
+    if (budget <= 0) return Promise.reject(taskError(timeoutCode, "Session Orchestrator read timed out", { localTimeout: true }));
     return new Promise((resolve, reject) => {
       let settled = false;
       let timer;
@@ -109,7 +109,7 @@ function createRuntime(store, api = pi) {
       };
       const abort = () => finish(reject, taskError("ABORTED", "Session Orchestrator request was cancelled"));
       for (const item of signals) item.addEventListener("abort", abort, { once: true });
-      timer = setTimeout(() => finish(reject, taskError(timeoutCode, "Session Orchestrator read timed out")), budget);
+      timer = setTimeout(() => finish(reject, taskError(timeoutCode, "Session Orchestrator read timed out", { localTimeout: true })), budget);
       Promise.resolve().then(() => {
         assertActive(signal);
         return callback();

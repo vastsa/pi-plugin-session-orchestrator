@@ -16,51 +16,49 @@ notifications. The plugin does not infer success from assistant text.
 
 ## A normal workflow
 
-1. Call `models` to inspect the user's ready configured models when a task needs
-   a particular model. Then `spawn(task, title?, model?)` to create a worker.
-   Keep the returned `sessionId` and delivery `messageId`.
-2. Work in parallel. By default the host sends a completion message back to the
-   sending session when the target turn settles; repeated polling is unnecessary.
-3. Use `send(sessionId, message)` for follow-up work in the same session, or to
-   communicate with any other existing session. Workers can reply to their
-   initiating session and peers by their real Session IDs.
-4. Inspect `status` or `result` when needed. Pass `messageId` or `turnId` to
-   retrieve one specific delivery instead of whichever message is latest.
-5. Review the actual result. `accept` optionally records that review for the
-   exact completed message. `cancel` stops collaboration work and retains the
-   durable session and history.
+1. Call `models` when the task needs a particular configured model. Then `spawn`
+   and keep its `sessionId` and `messageId`.
+2. **Pull mode is the default.** Use `result(sessionId, messageId)` when useful;
+   `ready: false` means the delivery is still running. Continue unrelated work
+   and check the same `messageId` later instead of creating another task.
+3. **Push mode is opt-in.** Pass `notifyOnCompletion: true` only when you want a
+   host completion message. Do not also poll that delivery: reading a result
+   does not withdraw a callback that the host may later queue while the parent
+   session is busy.
+4. Use `send(sessionId, message)` for follow-up work in the same session, or to
+   communicate with any existing session. Workers can reply by real Session IDs.
+5. Review the exact completed delivery. `accept` records review metadata;
+   `cancel` stops work without deleting the session.
 
-A received message is explicitly identified as another session's communication,
-not human input or new user authorization. Completion notices need no
-acknowledgement unless further work is necessary. Use
-`notifyOnCompletion: false` for informational messages to avoid unnecessary
-return messages. Host-generated completion notices never request another
-automatic completion notice.
+A pull-mode delivery never generates a completion callback. `wait` is available
+when deliberate polling/blocking is appropriate; it observes its timeout and
+returns exact results only after the host marks them ready.
+
+A received message is another session's communication, not new user
+authorization. Host-generated completion notices never request another notice.
 
 ## Actions
 
 | Action | Behavior |
 | --- | --- |
-| `spawn(task, title?, model?)` | Atomically creates a real worker and admits its first delivery through the host. |
-| `send(sessionId, message, kind?)` | Sends a task or message to an existing session, including a busy session's host queue. Does not reselect its model. |
-| `models()` | Lists ready model keys, aliases, reasoning metadata, AI-delegation eligibility, and the default. |
-| `status(sessionIds?)` | Reads host-owned live summaries; omission selects this caller's recent session references. |
-| `list()` | Reads a bounded host-backed directory of communicable Agent sessions, including independent top-level sessions. The response also retains a legacy `workers` field for recent-reference callers. |
-| `result(sessionId, messageId?, turnId?)` | Returns the host delivery and exact turn outcome. Failed or interrupted work is never accepted as a successful report. |
-| `wait(sessionIds, timeoutMs?)` | Explicit polling fallback, 25 seconds by default and at most 45 seconds. The entire read budget observes the deadline and cancellation. |
-| `supervise(sessionIds, message)` | Sends up to four follow-ups in parallel; returns successful receipts and any individual failures. |
-| `accept(sessionId|sessionIds, messageId?, note?)` | Stores review metadata keyed by the exact completed delivery. It never changes host execution state. |
-| `cancel(sessionId, messageId?)` | Cancels target collaboration work without deleting the session. |
+| `spawn(task, title?, model?, notifyOnCompletion?)` | Creates a real worker. Pull mode is default; set `notifyOnCompletion: true` to opt into a host callback. |
+| `send(sessionId, message, kind?, notifyOnCompletion?)` | Sends to an existing session, including a busy session's host queue; pull mode is default. |
+| `models()` | Lists ready model keys, aliases, reasoning metadata, delegation eligibility, and the default. |
+| `status(sessionIds?)` | Reads live host summaries; omission selects this caller's recent references. |
+| `list()` | Reads a bounded host-backed directory of communicable Agent sessions. |
+| `result(sessionId, messageId?, turnId?)` | Returns one exact delivery's status and outcome. Result reads do not cancel callbacks. |
+| `wait(sessionIds, messageId?, timeoutMs?)` | Explicitly polls an exact delivery or selected sessions; default 25 seconds, maximum 45 seconds. |
+| `supervise(sessionIds, message, notifyOnCompletion?)` | Sends up to four follow-ups in parallel; pull mode is default, and an explicit notification choice applies to each delivery. |
+| `accept(sessionId|sessionIds, messageId?, note?)` | Stores review metadata for an exact completed delivery. |
+| `cancel(sessionId, messageId?)` | Cancels collaboration work without deleting the session. |
 
-`result.ready` means the delivery has settled, including failure, cancellation,
-or interruption. Successful work requires `message.status === "completed"`;
-the compatibility `worker.report` field is populated only for that outcome.
+`result.ready` means the host has settled the delivery, including failure,
+cancellation, or interruption. Successful work requires
+`message.status === "completed"`. For push mode, avoid polling the same delivery:
+callbacks are host-owned and cannot be withdrawn after admission. For pull mode,
+`notifyOnCompletion` is explicitly false and no late callback will appear.
 
-`spawn` and `send` accept `notifyOnCompletion` (default true) and an optional
-`idempotencyKey` for retrying the same request. Use a different key for a new
-request. For batch supervision requiring retry identities, call `send` separately
-with one key per target. Session identity and delivery identity have separate
-purposes: `messageId` names a ledger entry, not a second worker system.
+`spawn`, `send`, and `supervise` accept `notifyOnCompletion` (default false) and an optional `idempotencyKey` for retrying the same request. Use a different key for a new request. For batch supervision requiring per-target notification or retry settings, call `send` separately. `messageId` names a delivery, not a session.
 
 ## Model selection
 

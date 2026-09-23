@@ -90,6 +90,7 @@ function createActions(runtime) {
       ...(title ? { title } : {}),
       modelKey: selected.model.key,
       ...options,
+      notifyOnCompletion: options.notifyOnCompletion ?? false,
     }, { signal: ctx.signal, read: false }));
     const warning = await runtime.remember(receipt.sessionId, owner, title || task.slice(0, 80));
     return {
@@ -107,8 +108,10 @@ function createActions(runtime) {
     if (args.kind !== undefined && !["task", "message"].includes(args.kind)) {
       throw taskError("INVALID_ARGUMENT", "kind must be task or message");
     }
+    const options = deliveryOptions(args);
     const receipt = validateDelivery(await runtime.call("send", {
-      sessionId, content, ...(args.kind ? { kind: args.kind } : {}), ...deliveryOptions(args),
+      sessionId, content, ...(args.kind ? { kind: args.kind } : {}), ...options,
+      notifyOnCompletion: options.notifyOnCompletion ?? false,
     }, { signal: ctx.signal, read: false }));
     if (receipt.sessionId !== sessionId) throw taskError("INTERNAL", "Host returned a delivery for a different session");
     const warning = await runtime.remember(sessionId, owner);
@@ -165,38 +168,58 @@ function createActions(runtime) {
     }
     const deadline = Date.now() + waitTimeout(args.timeoutMs);
     const options = { signal: ctx.signal, deadline };
+    async function readUntilDeadline(read) {
+      while (true) {
+        try {
+          return await read();
+        } catch (error) {
+          if (error.code !== "TIMEOUT" || error.details?.localTimeout !== true) throw error;
+          runtime.assertActive(ctx.signal);
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) throw taskError("WAIT_TIMEOUT", "Session Orchestrator wait timed out", { localTimeout: true });
+          await runtime.sleep(Math.min(POLL_INTERVAL_MS, remaining), options);
+        }
+      }
+    }
     let workers = ids.map((sessionId) => ({ sessionId, status: "unknown" }));
     try {
       while (true) {
         runtime.assertActive(ctx.signal);
         if (args.messageId || args.turnId) {
-          const value = await readResult(resultSelector(args, ids[0]), options);
+          const value = await readUntilDeadline(() => readResult(resultSelector(args, ids[0]), options));
           workers = [resultWorker(ids[0], value)];
-          if (value.message && TERMINAL_STATUSES.has(value.message.status)) {
+          if (value.ready) {
             return { action: "wait", timedOut: false, workers, results: [value] };
           }
         } else {
-          workers = await Promise.all(ids.map((id) => readStatus(id, options)));
+          workers = await Promise.all(ids.map((id) => readUntilDeadline(() => readStatus(id, options))));
           runtime.assertActive(ctx.signal);
           if (workers.every((entry) => TERMINAL_STATUSES.has(entry.status) || entry.status === "idle")) {
             const results = await Promise.all(workers.map((entry) => {
               const messageId = entry.currentTask?.messageId || entry.result?.messageId;
-              return readResult({ sessionId: entry.sessionId, ...(messageId ? { messageId } : {}) }, options);
+              return readUntilDeadline(() => readResult({ sessionId: entry.sessionId, ...(messageId ? { messageId } : {}) }, options));
             }));
             runtime.assertActive(ctx.signal);
-            return {
-              action: "wait", timedOut: false,
-              workers: workers.map((entry, index) => ({
-                ...withAcceptance(entry, owner), ...resultWorker(entry.sessionId, results[index]),
-              })),
-              results,
-            };
+            const settled = results.every((result, index) => {
+              const status = workers[index];
+              const hasNoDelivery = status.status === "idle" && !status.currentTask && !status.result;
+              return hasNoDelivery || (result.ready && result.message && TERMINAL_STATUSES.has(result.message.status));
+            });
+            if (settled) {
+              return {
+                action: "wait", timedOut: false,
+                workers: workers.map((entry, index) => ({
+                  ...withAcceptance(entry, owner), ...resultWorker(entry.sessionId, results[index]),
+                })),
+                results,
+              };
+            }
           }
         }
         await runtime.sleep(Math.min(POLL_INTERVAL_MS, Math.max(1, deadline - Date.now())), options);
       }
     } catch (error) {
-      if (error.code !== "WAIT_TIMEOUT") throw error;
+      if (error.code !== "WAIT_TIMEOUT" || error.details?.localTimeout !== true) throw error;
       return { action: "wait", timedOut: true, workers };
     }
   }
