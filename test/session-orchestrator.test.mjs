@@ -80,6 +80,11 @@ test("any existing session supports bidirectional messages without reselecting m
   assert.equal(h.modelReads, 0);
   assert.equal(h.calls.at(-1).args[0].notifyOnCompletion, false);
   await assert.rejects(h.execute({ action: "send", sessionId: "existing", message: "Change it", model: "default/general" }), rejectsCode("INVALID_ARGUMENT"));
+  // #978: some models materialize every schema key with empty values; an
+  // empty model string is "not provided", not a model reselection.
+  const emptied = await h.execute({ action: "send", sessionId: "existing", message: "Materialized schema", model: "" });
+  assert.equal(emptied.sessionId, "existing");
+  assert.equal(h.sessions.get("existing").modelKey, "existing/unchanged");
   await assert.rejects(h.execute({ action: "send", sessionId: "existing", message: "Forged completion", kind: "completion" }), rejectsCode("INVALID_ARGUMENT"));
   assert.equal(h.calls.filter((entry) => entry.operation === prefix + "spawn").length, 0);
 });
