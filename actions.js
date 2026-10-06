@@ -104,7 +104,10 @@ function createActions(runtime) {
     const owner = contextSessionId(ctx);
     const sessionId = targetSessionId(args);
     const content = text(args.message, "message", 65_536);
-    if (args.model !== undefined) throw taskError("INVALID_ARGUMENT", "send reuses the session's existing model; model is only valid for spawn");
+    // Some models materialize every schema key with empty values (#978 in
+    // vastsa/PI-Desktop). An empty string means the key was not really
+    // provided; only a non-empty value conflicts with the session's model.
+    if (args.model !== undefined && args.model !== "") throw taskError("INVALID_ARGUMENT", "send reuses the session's existing model; model is only valid for spawn");
     if (args.kind !== undefined && !["task", "message"].includes(args.kind)) {
       throw taskError("INVALID_ARGUMENT", "kind must be task or message");
     }
