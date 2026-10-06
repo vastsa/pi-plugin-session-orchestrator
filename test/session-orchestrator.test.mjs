@@ -9,7 +9,7 @@ const rejectsCode = (code) => (error) => error.code === code;
 
 test("manifest and registration share the bounded reviewed tool schema", async (t) => {
   const h = await loadHarness(t);
-  assert.equal(manifest.version, "0.7.0");
+  assert.equal(manifest.version, "0.7.1");
   assert.equal(manifest.schemaVersion, 1);
   assert.equal(manifest.id, "pi.session-orchestrator");
   assert.deepEqual(manifest.permissions, ["agent.tool.register", "desktop.control", "models.list"]);

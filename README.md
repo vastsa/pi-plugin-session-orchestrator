@@ -14,6 +14,27 @@ notifications. The plugin does not infer success from assistant text.
 - **Marketplace**: PI-Desktop → Plugins → Marketplace → Session Orchestrator
 - **Development**: Plugins → Load development plugin → this repository root
 
+## Quick start (how do I use it?)
+
+This plugin deliberately has **no panel, no command, and nothing to
+configure** after install. It works inside your existing Agent chat: the agent
+gains one tool, `SessionTask`, and decides to use it from your goal — **no
+special keyword is required**. Just describe what you want:
+
+| You say (any language) | What happens |
+| --- | --- |
+| 开两个子会话，一个跑测试一个改文档 / "spawn two workers: one runs the tests, one updates the docs" | Two real sessions are created and start working in parallel |
+| 把这个报错发给修 Bug 的那个会话继续查 / "send this error to the bug-fixing session" | A follow-up message goes to that existing session, keeping its model and context |
+| 子会话跑完了吗？/ "are the workers done?" | `result` reports the exact delivery's live host-owned state |
+
+Deliveries are pull-first: check `result(sessionId, messageId)` when you want
+the outcome; pass `notifyOnCompletion: true` only if you want a completion
+message back. If the agent does not pick the tool up, say explicitly "用
+SessionTask 开一个子会话…" / "use SessionTask to spawn a worker that…".
+
+详细机制见下文 / The full reference — actions, model selection, state and
+recovery — follows below.
+
 ## A normal workflow
 
 1. Call `models` when the task needs a particular configured model. Then `spawn`
