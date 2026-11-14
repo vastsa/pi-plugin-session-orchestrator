@@ -73,13 +73,13 @@ authorization. Host-generated completion notices never request another notice.
 | Action | Behavior |
 | --- | --- |
 | `spawn(task, title?, model?, notifyOnCompletion?)` | Creates a real worker and refuses to exceed `maxConcurrentSessions`. The worker reports back by default. |
-| `send(sessionId, message, kind?, notifyOnCompletion?)` | Sends to an existing session, including a busy session's host queue. The target reports back by default. |
+| `send(sessionId, message, kind?, notifyOnCompletion?, delivery?)` | Sends to an existing session. `delivery: "immediate"` promotes the follow-up so a busy target runs it at its next turn boundary instead of behind already-queued input; the default `queue` keeps today's order. The target reports back by default. |
 | `models()` | Lists ready model keys, aliases, reasoning metadata, delegation eligibility, and the default. |
 | `status(sessionIds?)` | Reads live host summaries; omission selects this caller's recent references. |
 | `list()` | Reads a bounded host-backed directory of communicable Agent sessions, plus `concurrency.limit`, `concurrency.active` and `concurrency.activeSessionIds`. |
 | `result(sessionId, messageId?, turnId?)` | Returns one exact delivery's status and outcome. Result reads do not cancel callbacks. |
 | `wait(sessionIds, messageId?, timeoutMs?)` | Explicitly polls an exact delivery or selected sessions; default 25 seconds, maximum 45 seconds. |
-| `supervise(sessionIds, message, notifyOnCompletion?)` | Sends one follow-up to up to `maxConcurrentSessions` sessions in parallel; the notification choice applies to each delivery. |
+| `supervise(sessionIds, message, notifyOnCompletion?, delivery?)` | Sends one follow-up to up to `maxConcurrentSessions` sessions in parallel; the notification and delivery choices apply to each delivery. |
 | `accept(sessionId\|sessionIds, messageId?, note?)` | Stores review metadata for an exact completed delivery. |
 | `cancel(sessionId, messageId?)` | Cancels collaboration work without deleting the session. |
 

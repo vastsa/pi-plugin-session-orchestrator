@@ -482,3 +482,35 @@ test("a stored ceiling outside the supported range is clamped instead of trusted
   await h.execute({ action: "spawn", task: "Only worker allowed" });
   await assert.rejects(h.execute({ action: "spawn", task: "Second worker" }), rejectsCode("LIMIT_EXCEEDED"));
 });
+
+test("send chooses queued or immediate delivery, and only send may choose", async (t) => {
+  const h = await loadHarness(t);
+  // Default stays today's behaviour: no delivery argument reaches the host.
+  const queued = await h.execute({ action: "send", sessionId: "existing", message: "Queue it" });
+  assert.equal(queued.delivery, undefined);
+  assert.equal("delivery" in h.calls.at(-1).args[0], false);
+  const immediate = await h.execute({
+    action: "send", sessionId: "existing", message: "Jump ahead", delivery: "immediate",
+  });
+  assert.equal(immediate.delivery, "immediate");
+  assert.equal(h.calls.at(-1).args[0].delivery, "immediate");
+  // A model that materializes every key sends "" for an unused one (#978).
+  const blank = await h.execute({ action: "send", sessionId: "existing", message: "Blank", delivery: "" });
+  assert.equal(blank.delivery, undefined);
+  assert.equal("delivery" in h.calls.at(-1).args[0], false);
+  const callsBefore = h.calls.length;
+  await assert.rejects(
+    h.execute({ action: "send", sessionId: "existing", message: "Bad", delivery: "later" }),
+    rejectsCode("INVALID_ARGUMENT"),
+  );
+  assert.equal(h.calls.length, callsBefore, "an invalid delivery never reaches the host");
+  // A spawn's first task always queues; only follow-ups may ask to jump.
+  await assert.rejects(
+    h.execute({ action: "spawn", task: "Bad", delivery: "immediate" }),
+    rejectsCode("INVALID_ARGUMENT"),
+  );
+  const batch = await h.execute({
+    action: "supervise", sessionIds: ["existing", "peer"], message: "All of you", delivery: "immediate",
+  });
+  assert.ok(batch.workers.every((entry) => entry.delivery === "immediate"));
+});

@@ -19,6 +19,22 @@ const {
 
 const { MAX_ACCEPTANCE_NOTE_CHARS } = require("./state.js");
 const { catalog, selectModel } = require("./models.js");
+
+/**
+ * How the host should order this follow-up: `queue` appends behind whatever the
+ * target already queued (the historical behaviour), `immediate` promotes it so a
+ * busy target runs it at the next turn boundary instead of behind user input.
+ * Some models materialize every schema key with an empty value (#978), so an
+ * empty string means "not provided".
+ */
+function sendDelivery(args) {
+  const value = args.delivery;
+  if (value === undefined || value === "") return undefined;
+  if (value !== "queue" && value !== "immediate") {
+    throw taskError("INVALID_ARGUMENT", "delivery must be queue or immediate");
+  }
+  return value;
+}
 function resultSelector(args, sessionId) {
   const messageId = optionalText(args.messageId, "messageId");
   const turnId = optionalText(args.turnId, "turnId");
@@ -115,6 +131,9 @@ function createActions(runtime) {
         `This session already has ${budget.active.length} active worker session(s), which is the configured limit of ${budget.limit}. Wait for their completion messages, cancel one, or raise maxConcurrentSessions in the plugin settings.`,
         { limit: budget.limit, activeSessionIds: budget.active.map((entry) => entry.sessionId) });
     }
+    if (args.delivery !== undefined && args.delivery !== "") {
+      throw taskError("INVALID_ARGUMENT", "delivery is only valid for send; a spawned worker's first task always queues");
+    }
     const receipt = validateDelivery(await runtime.call("spawn", {
       task,
       ...(title ? { title } : {}),
@@ -143,13 +162,19 @@ function createActions(runtime) {
       throw taskError("INVALID_ARGUMENT", "kind must be task or message");
     }
     const options = deliveryOptions(args);
+    const delivery = sendDelivery(args);
     const receipt = validateDelivery(await runtime.call("send", {
       sessionId, content, ...(args.kind ? { kind: args.kind } : {}), ...options,
+      ...(delivery ? { delivery } : {}),
       notifyOnCompletion: options.notifyOnCompletion ?? true,
     }, { signal: ctx.signal, read: false }));
     if (receipt.sessionId !== sessionId) throw taskError("INTERNAL", "Host returned a delivery for a different session");
     const warning = await runtime.remember(sessionId, owner);
-    return { action: "send", ...receipt, accepted: true, ...(warning ? { warning } : {}) };
+    return {
+      action: "send", ...receipt, accepted: true,
+      ...(delivery ? { delivery } : {}),
+      ...(warning ? { warning } : {}),
+    };
   }
 
   async function status(args, ctx, action = "status") {
