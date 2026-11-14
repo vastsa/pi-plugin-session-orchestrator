@@ -102,11 +102,20 @@ Session IDs, so a plan can be batched into waves instead of shrinking the work.
 
 | Skill | Use it for |
 | --- | --- |
-| `Skills: Requirements brief` | 需求探讨 / 头脑风暴 / "poke holes in this idea". Spawns roles with opposing stances, keeps the disagreements visible, and writes `docs/requirements/<slug>.md` with scope, non-goals, risks, acceptance criteria and the open questions only the user can answer. |
-| `Skills: Development team` | 开发团队 / 分工开发 / 派测试会话. Restates the requirement from the code, asks for sign-off, presents a dispatch plan for approval, then runs development, test and review sessions: security, requirement fit, code style, human readability, SQL performance and test coverage — each argued in both directions, each finding needing `file:line` evidence and a severity. |
+| `Skills: Requirements brief` | 需求探讨 / 头脑风暴 / "poke holes in this idea". Runs a **phased** debate: independent openings, a relayed cross-critique round, then your written adjudication — and ends in `docs/requirements/YYYY-MM-DD-<slug>.md` with approaches considered, risks, acceptance criteria and the questions only the user can answer. |
+| `Skills: Development team` | 开发团队 / 分工开发 / 派测试会话. Restates the requirement from the code, asks for sign-off, then posts a dispatch plan that must pass a **pre-dispatch gate** before anything is spawned. Development, test and the six review angles run as separate sessions, and the final report must clear a **completion gate** ("angle reviewed" needs a verdict, not silence). |
+| `Skills: Review panel` | 评审单角. Loaded by each review session: the six angle rubrics, the advocate/attack/verdict protocol, what counts as evidence for each claim type, the severity scale and the fixed report contract. |
 
-Both skills state the same host facts up front: no `wait`, no polling, workers
-cannot spawn workers, self-contained briefs, and reports come back on their own.
+Three levels of context, the way the host expects: every skill costs one catalog
+line (`name` + `description`, capped at 240 characters) in the prompt, its body
+loads only when the model asks for it, and a review session loads `Review panel`
+instead of the lead pasting six rubrics into six briefs.
+
+All three state the same host facts up front: no `wait`, no polling, workers
+cannot spawn workers, self-contained briefs, reports come back on their own.
+`test/skills.test.mjs` enforces the catalog contract in CI — declared paths,
+unique ids, the 128 KiB / 240 character caps, an actionable `description`, and
+no skill referencing a sibling the manifest does not ship.
 
 ## Model selection
 

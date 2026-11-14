@@ -32,7 +32,7 @@ test("manifest and registration share the bounded reviewed tool schema", async (
 
   // The two team skills and the concurrency ceiling are the plugin's own surface.
   assert.deepEqual(manifest.contributes.skills,
-    ["./skills/requirements-brief.md", "./skills/development-team.md"]);
+    ["./skills/requirements-brief.md", "./skills/development-team.md", "./skills/review-panel.md"]);
   assert.deepEqual(manifest.contributes.settings.map((entry) => [entry.key, entry.type, entry.default]),
     [["maxConcurrentSessions", "number", 8]]);
 
