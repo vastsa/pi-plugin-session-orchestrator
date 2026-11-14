@@ -9,10 +9,11 @@ const rejectsCode = (code) => (error) => error.code === code;
 
 test("manifest and registration share the bounded reviewed tool schema", async (t) => {
   const h = await loadHarness(t);
-  assert.equal(manifest.version, "0.7.1");
+  assert.equal(manifest.version, "0.8.0");
   assert.equal(manifest.schemaVersion, 1);
   assert.equal(manifest.id, "pi.session-orchestrator");
-  assert.deepEqual(manifest.permissions, ["agent.tool.register", "desktop.control", "models.list"]);
+  assert.deepEqual(manifest.permissions,
+    ["agent.tool.register", "agent.prompt.inject", "desktop.control", "models.list"]);
   const descriptor = manifest.contributes.agentTools[0];
   assert.deepEqual(h.registered.tool.schema, descriptor.schema);
   assert.equal(h.registered.tool.description, descriptor.description);
@@ -24,10 +25,16 @@ test("manifest and registration share the bounded reviewed tool schema", async (
     assert.ok(manifest.i18n[locale].safetyNotes);
   }
   assert.equal(descriptor.schema.properties.timeoutMs.maximum, 45_000);
-  assert.match(descriptor.schema.properties.notifyOnCompletion.description, /Default false/);
+  assert.match(descriptor.schema.properties.notifyOnCompletion.description, /Default true/);
   assert.equal(descriptor.schema.properties.note.maxLength, 4_096);
   assert.equal(descriptor.schema.additionalProperties, false);
   assert.match(manifest.engines.piDesktop, /^>=0\.14\.7/);
+
+  // The two team skills and the concurrency ceiling are the plugin's own surface.
+  assert.deepEqual(manifest.contributes.skills,
+    ["./skills/requirements-brief.md", "./skills/development-team.md"]);
+  assert.deepEqual(manifest.contributes.settings.map((entry) => [entry.key, entry.type, entry.default]),
+    [["maxConcurrentSessions", "number", 8]]);
 
   assert.equal("ui" in manifest, false);
   assert.equal("commands" in manifest.contributes, false);
@@ -198,22 +205,28 @@ test("cancel addresses the original Session ID without a relationship guard", as
 });
 
 
-test("new deliveries default to pull mode and push callbacks require explicit opt-in", async (t) => {
+test("new deliveries report back on their own unless the caller opts out", async (t) => {
   const h = await loadHarness(t);
-  const pulledSpawn = await h.execute({ action: "spawn", task: "Pull the result when ready" });
-  assert.equal(h.messages.get(pulledSpawn.messageId).notifyOnCompletion, false);
-  assert.equal(h.calls.find((call) => call.operation === prefix + "spawn").args[0].notifyOnCompletion, false);
-  const pushedSpawn = await h.execute({ action: "spawn", task: "Use callback mode", notifyOnCompletion: true });
+  // Push is the default: a worker's completion message arrives without the
+  // parent polling, so a dispatch plan never needs a wait step.
+  const pushedSpawn = await h.execute({ action: "spawn", task: "Report back when done" });
   assert.equal(h.messages.get(pushedSpawn.messageId).notifyOnCompletion, true);
-  const pulledSend = await h.execute({ action: "send", sessionId: "existing", message: "Pull mode" });
-  assert.equal(h.messages.get(pulledSend.messageId).notifyOnCompletion, false);
-  const pushedSend = await h.execute({ action: "send", sessionId: "existing", message: "Push mode", notifyOnCompletion: true });
+  assert.equal(h.calls.find((call) => call.operation === prefix + "spawn").args[0].notifyOnCompletion, true);
+  const pushedSend = await h.execute({ action: "send", sessionId: "existing", message: "Push mode" });
   assert.equal(h.messages.get(pushedSend.messageId).notifyOnCompletion, true);
-  const pulledBatch = await h.execute({ action: "supervise", sessionIds: ["existing", "peer"], message: "Pull batch" });
-  assert.ok(pulledBatch.workers.every((entry) => h.messages.get(entry.messageId).notifyOnCompletion === false));
-  const pushedBatch = await h.execute({ action: "supervise", sessionIds: ["existing", "peer"], message: "Push batch", notifyOnCompletion: true });
+  const pushedBatch = await h.execute({ action: "supervise", sessionIds: ["existing", "peer"], message: "Push batch" });
   assert.ok(pushedBatch.workers.every((entry) => h.messages.get(entry.messageId).notifyOnCompletion === true));
+  // Pull stays available for a delivery the caller will read itself.
+  const pulledSpawn = await h.execute({ action: "spawn", task: "Pull the result myself", notifyOnCompletion: false });
+  assert.equal(h.messages.get(pulledSpawn.messageId).notifyOnCompletion, false);
+  const pulledSend = await h.execute({ action: "send", sessionId: "existing", message: "Pull mode", notifyOnCompletion: false });
+  assert.equal(h.messages.get(pulledSend.messageId).notifyOnCompletion, false);
+  const pulledBatch = await h.execute({
+    action: "supervise", sessionIds: ["existing", "peer"], message: "Pull batch", notifyOnCompletion: false,
+  });
+  assert.ok(pulledBatch.workers.every((entry) => h.messages.get(entry.messageId).notifyOnCompletion === false));
 });
+
 
 test("exact wait keeps polling when a terminal-looking result is not ready", async (t) => {
   const h = await loadHarness(t);
@@ -420,4 +433,52 @@ test("conflicting legacy aliases, invalid inputs, and mismatched host results fa
   h.beforeInvoke = ({ operation }) => operation === prefix + "result"
     ? { ready: true, message: { id: "wrong", targetSessionId: "peer", status: "completed", result: "Other session" } } : undefined;
   await assert.rejects(h.execute({ action: "result", sessionId: "existing" }), rejectsCode("INTERNAL"));
+});
+
+test("spawn stops at the configured worker ceiling and resumes once one reports", async (t) => {
+  const h = await loadHarness(t, {
+    initialSettings: { version: 3, sessions: [], acceptances: [], maxConcurrentSessions: 2 },
+  });
+  const first = await h.execute({ action: "spawn", task: "Review security" });
+  const second = await h.execute({ action: "spawn", task: "Review coverage" });
+  assert.equal(first.concurrency.limit, 2);
+  assert.equal(second.concurrency.active, 2);
+  await assert.rejects(h.execute({ action: "spawn", task: "Review style" }), (error) => {
+    assert.equal(error.code, "LIMIT_EXCEEDED");
+    assert.equal(error.details.limit, 2);
+    assert.deepEqual(
+      [...error.details.activeSessionIds].sort(),
+      [first.sessionId, second.sessionId].sort(),
+    );
+    return true;
+  });
+  // The ceiling is a live capacity, not a lifetime cap: a reported worker frees
+  // the slot its plan was waiting for.
+  h.complete(first.messageId, "Security review found two issues");
+  const third = await h.execute({ action: "spawn", task: "Review style" });
+  assert.equal(third.concurrency.active, 2);
+  assert.equal(h.calls.filter((call) => call.operation === prefix + "spawn").length, 3);
+});
+
+test("list reports the configured ceiling and the workers it already counts", async (t) => {
+  const h = await loadHarness(t, {
+    initialSettings: { version: 3, sessions: [], acceptances: [], maxConcurrentSessions: 5 },
+  });
+  const spawned = await h.execute({ action: "spawn", task: "Investigate" });
+  const listed = await h.execute({ action: "list" });
+  assert.deepEqual(listed.concurrency, {
+    limit: 5,
+    active: 1,
+    activeSessionIds: [spawned.sessionId],
+  });
+});
+
+test("a stored ceiling outside the supported range is clamped instead of trusted", async (t) => {
+  const h = await loadHarness(t, {
+    initialSettings: { version: 3, sessions: [], acceptances: [], maxConcurrentSessions: "0" },
+  });
+  const listed = await h.execute({ action: "list" });
+  assert.equal(listed.concurrency.limit, 1);
+  await h.execute({ action: "spawn", task: "Only worker allowed" });
+  await assert.rejects(h.execute({ action: "spawn", task: "Second worker" }), rejectsCode("LIMIT_EXCEEDED"));
 });

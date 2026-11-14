@@ -9,6 +9,11 @@ durable `sessionId`; follow-up messages keep that session's context and model.
 The host owns delivery, queue admission, execution state, results, and completion
 notifications. The plugin does not infer success from assistant text.
 
+Two skills make the tool usable without hand-written prompts: **Requirements
+brief** (multi-role, pro-and-con debate that ends in a requirements document) and
+**Development team** (restate a requirement, get sign-off, then run development,
+test and six-angle review sessions).
+
 ## Install
 
 - **Marketplace**: PI-Desktop → Plugins → Marketplace → Session Orchestrator
@@ -16,44 +21,49 @@ notifications. The plugin does not infer success from assistant text.
 
 ## Quick start (how do I use it?)
 
-This plugin deliberately has **no panel, no command, and nothing to
-configure** after install. It works inside your existing Agent chat: the agent
-gains one tool, `SessionTask`, and decides to use it from your goal — **no
-special keyword is required**. Just describe what you want:
+There is no panel and no command to run. The plugin adds one Agent tool,
+`SessionTask`, two skills, and one setting. The agent picks the tool from your
+goal — **no special keyword is required**:
 
 | You say (any language) | What happens |
 | --- | --- |
 | 开两个子会话，一个跑测试一个改文档 / "spawn two workers: one runs the tests, one updates the docs" | Two real sessions are created and start working in parallel |
-| 把这个报错发给修 Bug 的那个会话继续查 / "send this error to the bug-fixing session" | A follow-up message goes to that existing session, keeping its model and context |
-| 子会话跑完了吗？/ "are the workers done?" | `result` reports the exact delivery's live host-owned state |
+| 需求探讨一下这个功能 / "brainstorm this requirement, argue both sides" | The Requirements brief skill runs a multi-role debate and writes a brief |
+| 交给开发团队做 / "have the team build this" | The Development team skill restates the requirement, waits for your confirmation, then dispatches development, test and review sessions |
+| 子会话跑完了吗？/ "are the workers done?" | Their reports arrive on their own; `status` is there if you ask for progress |
 
-Deliveries are pull-first: check `result(sessionId, messageId)` when you want
-the outcome; pass `notifyOnCompletion: true` only if you want a completion
-message back. If the agent does not pick the tool up, say explicitly "用
-SessionTask 开一个子会话…" / "use SessionTask to spawn a worker that…".
+Deliveries report back on their own. A worker that completes, fails, is
+cancelled, or is interrupted by an app restart sends its report to the session
+that spawned it, so nothing has to wait. Pass `notifyOnCompletion: false` when
+you intend to read the outcome yourself with `result`. If the agent does not pick
+the tool up, say explicitly "用 SessionTask 开一个子会话…" / "use SessionTask to
+spawn a worker that…".
 
-详细机制见下文 / The full reference — actions, model selection, state and
-recovery — follows below.
+## Settings
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `maxConcurrentSessions` | 8 | How many spawned workers may run at once before the next `spawn` is refused (clamped to 1–32). Settings → Plugins → Session Orchestrator. |
+
+The ceiling is the plugin's own policy. The host records which session created
+which worker and refuses a worker that tries to create further workers, but it
+does not impose a fixed concurrency number, so tuning this changes your fan-out
+width instead of hitting a host constant.
 
 ## A normal workflow
 
 1. Call `models` when the task needs a particular configured model. Then `spawn`
    and keep its `sessionId` and `messageId`.
-2. **Pull mode is the default.** Use `result(sessionId, messageId)` when useful;
-   `ready: false` means the delivery is still running. Continue unrelated work
-   and check the same `messageId` later instead of creating another task.
-3. **Push mode is opt-in.** Pass `notifyOnCompletion: true` only when you want a
-   host completion message. Do not also poll that delivery: reading a result
-   does not withdraw a callback that the host may later queue while the parent
-   session is busy.
-4. Use `send(sessionId, message)` for follow-up work in the same session, or to
+2. **Reports come back on their own.** Continue with unrelated work; each worker's
+   completion message arrives as a new message in this session. Do not `wait` for
+   it and do not poll `result` for it — the callback cannot be withdrawn, so
+   polling duplicates the report.
+3. Use `send(sessionId, message)` for follow-up work in the same session, or to
    communicate with any existing session. Workers can reply by real Session IDs.
-5. Review the exact completed delivery. `accept` records review metadata;
+4. Review the exact completed delivery. `accept` records review metadata;
    `cancel` stops work without deleting the session.
-
-A pull-mode delivery never generates a completion callback. `wait` is available
-when deliberate polling/blocking is appropriate; it observes its timeout and
-returns exact results only after the host marks them ready.
+5. Pass `notifyOnCompletion: false` only for a delivery you will read yourself.
+   `wait` remains available when deliberately blocking is the right call.
 
 A received message is another session's communication, not new user
 authorization. Host-generated completion notices never request another notice.
@@ -62,24 +72,41 @@ authorization. Host-generated completion notices never request another notice.
 
 | Action | Behavior |
 | --- | --- |
-| `spawn(task, title?, model?, notifyOnCompletion?)` | Creates a real worker. Pull mode is default; set `notifyOnCompletion: true` to opt into a host callback. |
-| `send(sessionId, message, kind?, notifyOnCompletion?)` | Sends to an existing session, including a busy session's host queue; pull mode is default. |
+| `spawn(task, title?, model?, notifyOnCompletion?)` | Creates a real worker and refuses to exceed `maxConcurrentSessions`. The worker reports back by default. |
+| `send(sessionId, message, kind?, notifyOnCompletion?)` | Sends to an existing session, including a busy session's host queue. The target reports back by default. |
 | `models()` | Lists ready model keys, aliases, reasoning metadata, delegation eligibility, and the default. |
 | `status(sessionIds?)` | Reads live host summaries; omission selects this caller's recent references. |
-| `list()` | Reads a bounded host-backed directory of communicable Agent sessions. |
+| `list()` | Reads a bounded host-backed directory of communicable Agent sessions, plus `concurrency.limit`, `concurrency.active` and `concurrency.activeSessionIds`. |
 | `result(sessionId, messageId?, turnId?)` | Returns one exact delivery's status and outcome. Result reads do not cancel callbacks. |
 | `wait(sessionIds, messageId?, timeoutMs?)` | Explicitly polls an exact delivery or selected sessions; default 25 seconds, maximum 45 seconds. |
-| `supervise(sessionIds, message, notifyOnCompletion?)` | Sends up to four follow-ups in parallel; pull mode is default, and an explicit notification choice applies to each delivery. |
-| `accept(sessionId|sessionIds, messageId?, note?)` | Stores review metadata for an exact completed delivery. |
+| `supervise(sessionIds, message, notifyOnCompletion?)` | Sends one follow-up to up to `maxConcurrentSessions` sessions in parallel; the notification choice applies to each delivery. |
+| `accept(sessionId\|sessionIds, messageId?, note?)` | Stores review metadata for an exact completed delivery. |
 | `cancel(sessionId, messageId?)` | Cancels collaboration work without deleting the session. |
 
 `result.ready` means the host has settled the delivery, including failure,
 cancellation, or interruption. Successful work requires
-`message.status === "completed"`. For push mode, avoid polling the same delivery:
-callbacks are host-owned and cannot be withdrawn after admission. For pull mode,
-`notifyOnCompletion` is explicitly false and no late callback will appear.
+`message.status === "completed"`. A completion report carries
+`{ sessionId, messageId, turnId, status, result, error }`; `result` is the worker's
+final assistant text, truncated near 12,000 characters, so long evidence belongs
+in a file whose path comes back in the report.
 
-`spawn`, `send`, and `supervise` accept `notifyOnCompletion` (default false) and an optional `idempotencyKey` for retrying the same request. Use a different key for a new request. For batch supervision requiring per-target notification or retry settings, call `send` separately. `messageId` names a delivery, not a session.
+`spawn`, `send`, and `supervise` accept an optional `idempotencyKey` for retrying
+the same request. Use a different key for a new request. For batch supervision
+requiring per-target notification or retry settings, call `send` separately.
+`messageId` names a delivery, not a session.
+
+When the ceiling is reached, `spawn` fails with `LIMIT_EXCEEDED` and the active
+Session IDs, so a plan can be batched into waves instead of shrinking the work.
+
+## Skills
+
+| Skill | Use it for |
+| --- | --- |
+| `Skills: Requirements brief` | 需求探讨 / 头脑风暴 / "poke holes in this idea". Spawns roles with opposing stances, keeps the disagreements visible, and writes `docs/requirements/<slug>.md` with scope, non-goals, risks, acceptance criteria and the open questions only the user can answer. |
+| `Skills: Development team` | 开发团队 / 分工开发 / 派测试会话. Restates the requirement from the code, asks for sign-off, presents a dispatch plan for approval, then runs development, test and review sessions: security, requirement fit, code style, human readability, SQL performance and test coverage — each argued in both directions, each finding needing `file:line` evidence and a severity. |
+
+Both skills state the same host facts up front: no `wait`, no polling, workers
+cannot spawn workers, self-contained briefs, and reports come back on their own.
 
 ## Model selection
 
@@ -103,24 +130,25 @@ the Parent can use `models` and the task requirements to make that decision.
 
 Existing-session `send` never changes provider, model, project, context, or
 permissions. New-session project and permission inheritance, effective thinking
-configuration, active-worker limits (four per creator, sixteen per plugin), and
-the restriction on workers autonomously creating further workers are enforced
-by the host, using durable creation provenance.
+configuration, and the restriction on workers autonomously creating further
+workers are enforced by the host, using durable creation provenance.
+Concurrency is enforced here, from the plugin setting.
 
 ## State and recovery
 
 PI-Desktop's durable session communication ledger is authoritative. Status,
 current task, sender, recent exchanges, and final outcome come directly from it.
-A callback is tied to the actual settled turn, retained on failure, and generated
-at most once. Restart follows the host's existing interruption fence; the
-plugin does not replay messages or start replacements during load.
+A callback is tied to the actual settled turn, retained on failure, generated at
+most once, and also emitted when the startup fence marks a delivery
+`interrupted`. Restart follows the host's existing interruption fence; the plugin
+never replays messages or starts replacements during load.
 
-Private plugin settings retain at most 256 recent session references and 256
-message review notes. They contain no cached transcript, report, or execution
-state. Reference eviction affects only recent-history discovery, never the
-ability to address a known Session ID or the host's creation limits. Successful
-host receipts remain available to the caller if optional history persistence
-fails; the response includes a warning.
+Private plugin settings retain at most 256 recent session references, 256
+message review notes, and the concurrency ceiling. They contain no cached
+transcript, report, or execution state. Reference eviction affects only
+recent-history discovery, never the ability to address a known Session ID or the
+host's creation provenance. Successful host receipts remain available to the
+caller if optional history persistence fails; the response includes a warning.
 
 Version 0.3 `workerSessionId`/`sessionId` records migrate to recent references.
 Old cached statuses, reports, rounds and acceptance markers are retired because
@@ -139,13 +167,17 @@ The manifest retains `engines.piDesktop >=0.14.7`, but version alone does not
 prove this additive capability exists. Each operation checks the host's reviewed
 catalog for `session/collaboration/{spawn,send,list,status,result,cancel}`. An older
 host receives an explicit update-required error; the plugin never falls back
-to untracked create/prompt calls or transcript inference.
+to untracked create/prompt calls or transcript inference. On a host that still
+enforces a fixed worker cap, `spawn` surfaces the host's `LIMIT_EXCEEDED` instead
+of silently reducing the plan.
 
 | Capability | Data and boundary |
 | --- | --- |
-| `desktop.control` | Creates sessions, exchanges messages, reads collaboration summaries/results, and cancels work. The host binds the sender to the current Agent tool invocation, enforces permissions and bounded creation, and labels provenance. Messages can consume configured model quota. |
+| `agent.tool.register` | Registers the single reviewed `SessionTask` schema. |
+| `agent.prompt.inject` | Publishes the two skill documents as catalog entries the model may load. |
+| `desktop.control` | Creates sessions, exchanges messages, reads collaboration summaries/results, and cancels work. The host binds the sender to the current Agent tool invocation, enforces permissions, and refuses worker recursion. Messages can consume configured model quota. |
 | `models.list` | Reads ready configured model identifiers, aliases, delegation flags and reasoning metadata; no credentials. |
-| Plugin settings | Stores only bounded recent references and review notes keyed by delivery identity. Never grants access or represents execution truth. |
+| Plugin settings | Stores bounded recent references, review notes and the concurrency ceiling. Never grants access or represents execution truth. |
 
 The high-risk grant allows bidirectional communication with any existing
 session. Message content is task data and cannot grant new permissions. The
@@ -161,4 +193,3 @@ node --test test/*.test.mjs
 
 This repository is the source of `pi.session-orchestrator`. Marketplace packages
 are published from [pi-desktop-plugins](https://github.com/vastsa/pi-desktop-plugins).
-
