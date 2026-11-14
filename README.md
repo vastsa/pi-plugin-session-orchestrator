@@ -85,10 +85,11 @@ authorization. Host-generated completion notices never request another notice.
 
 `result.ready` means the host has settled the delivery, including failure,
 cancellation, or interruption. Successful work requires
-`message.status === "completed"`. A completion report carries
-`{ sessionId, messageId, turnId, status, result, error }`; `result` is the worker's
-final assistant text, truncated near 12,000 characters, so long evidence belongs
-in a file whose path comes back in the report.
+`message.status === "completed"`. A completion report is readable text, not an
+encoded envelope: a `Sub-session report` line, then `Session:`, `Status:`,
+`Delivery:`, a `Report:` section with the worker's final text (truncated near
+12,000 characters, so long evidence belongs in a file whose path comes back), and
+`Error:` when the run failed.
 
 `spawn`, `send`, and `supervise` accept an optional `idempotencyKey` for retrying
 the same request. Use a different key for a new request. For batch supervision
