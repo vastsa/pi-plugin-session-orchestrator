@@ -1,10 +1,12 @@
 "use strict";
 
 const {
+  ACTIVE_STATUSES,
   MAX_SELECTED_SESSIONS,
   POLL_INTERVAL_MS,
   PREFIX,
   TERMINAL_STATUSES,
+  concurrencyLimit,
   contextSessionId,
   deliveryOptions,
   optionalText,
@@ -14,9 +16,25 @@ const {
   text,
   waitTimeout,
 } = require("./runtime.js");
+
 const { MAX_ACCEPTANCE_NOTE_CHARS } = require("./state.js");
 const { catalog, selectModel } = require("./models.js");
 
+/**
+ * How the host should order this follow-up: `queue` appends behind whatever the
+ * target already queued (the historical behaviour), `immediate` promotes it so a
+ * busy target runs it at the next turn boundary instead of behind user input.
+ * Some models materialize every schema key with an empty value (#978), so an
+ * empty string means "not provided".
+ */
+function sendDelivery(args) {
+  const value = args.delivery;
+  if (value === undefined || value === "") return undefined;
+  if (value !== "queue" && value !== "immediate") {
+    throw taskError("INVALID_ARGUMENT", "delivery must be queue or immediate");
+  }
+  return value;
+}
 function resultSelector(args, sessionId) {
   const messageId = optionalText(args.messageId, "messageId");
   const turnId = optionalText(args.turnId, "turnId");
@@ -78,24 +96,56 @@ function createActions(runtime) {
     return value;
   }
 
+  /**
+   * Workers this sender already has running or queued. The host owns creator
+   * provenance and live state, so this is one directory read, not one read per
+   * remembered session.
+   */
+  async function activeWorkers(owner, options) {
+    const value = await runtime.call("list", {}, options);
+    const sessions = Array.isArray(value?.sessions) ? value.sessions : [];
+    return sessions.filter((entry) => entry?.createdBySession?.sessionId === owner &&
+      ACTIVE_STATUSES.has(entry.status));
+  }
+
+  async function workerBudget(owner, options) {
+    const limit = concurrencyLimit(await runtime.settings(options));
+    const active = await activeWorkers(owner, options);
+    return { limit, active, available: Math.max(0, limit - active.length) };
+  }
   async function spawn(args, ctx) {
     const owner = contextSessionId(ctx);
     const task = text(args.task, "task", 65_536);
     const title = optionalText(args.title, "title", 80);
     const options = deliveryOptions(args);
     await runtime.ensureOperation(PREFIX + "spawn", { signal: ctx.signal });
+    // Resolve the model first: an impossible model request must fail before the
+    // plugin reads live worker capacity or asks the host to create anything.
     const selected = selectModel(await runtime.models({ signal: ctx.signal }), args.model);
+    // The host records creator provenance and refuses worker recursion, but the
+    // concurrency ceiling is this plugin's own preference, so it is enforced here
+    // before another live session is created.
+    const budget = await workerBudget(owner, { signal: ctx.signal });
+    if (budget.active.length >= budget.limit) {
+      throw taskError("LIMIT_EXCEEDED",
+        `This session already has ${budget.active.length} active worker session(s), which is the configured limit of ${budget.limit}. Wait for their completion messages, cancel one, or raise maxConcurrentSessions in the plugin settings.`,
+        { limit: budget.limit, activeSessionIds: budget.active.map((entry) => entry.sessionId) });
+    }
+    if (args.delivery !== undefined && args.delivery !== "") {
+      throw taskError("INVALID_ARGUMENT", "delivery is only valid for send; a spawned worker's first task always queues");
+    }
     const receipt = validateDelivery(await runtime.call("spawn", {
       task,
       ...(title ? { title } : {}),
       modelKey: selected.model.key,
       ...options,
-      notifyOnCompletion: options.notifyOnCompletion ?? false,
+      notifyOnCompletion: options.notifyOnCompletion ?? true,
     }, { signal: ctx.signal, read: false }));
     const warning = await runtime.remember(receipt.sessionId, owner, title || task.slice(0, 80));
     return {
       action: "spawn", ...receipt, accepted: true,
       requestedModel: selected.model.key, modelSelection: selected.selection,
+      concurrency: { limit: budget.limit, active: budget.active.length + 1 },
       ...(warning ? { warning } : {}),
     };
   }
@@ -112,13 +162,19 @@ function createActions(runtime) {
       throw taskError("INVALID_ARGUMENT", "kind must be task or message");
     }
     const options = deliveryOptions(args);
+    const delivery = sendDelivery(args);
     const receipt = validateDelivery(await runtime.call("send", {
       sessionId, content, ...(args.kind ? { kind: args.kind } : {}), ...options,
-      notifyOnCompletion: options.notifyOnCompletion ?? false,
+      ...(delivery ? { delivery } : {}),
+      notifyOnCompletion: options.notifyOnCompletion ?? true,
     }, { signal: ctx.signal, read: false }));
     if (receipt.sessionId !== sessionId) throw taskError("INTERNAL", "Host returned a delivery for a different session");
     const warning = await runtime.remember(sessionId, owner);
-    return { action: "send", ...receipt, accepted: true, ...(warning ? { warning } : {}) };
+    return {
+      action: "send", ...receipt, accepted: true,
+      ...(delivery ? { delivery } : {}),
+      ...(warning ? { warning } : {}),
+    };
   }
 
   async function status(args, ctx, action = "status") {
@@ -144,10 +200,20 @@ function createActions(runtime) {
     // for discovering independent top-level sessions.
     const ids = store.list(owner, MAX_SELECTED_SESSIONS).map((entry) => entry.sessionId);
     const workers = await Promise.all(ids.map((id) => readStatus(id, { signal: ctx.signal })));
+    // Worker capacity is the configured preference, so the caller can plan a
+    // batch without discovering the ceiling by failing a spawn.
+    const limit = concurrencyLimit(await runtime.settings({ signal: ctx.signal }));
+    const active = value.sessions.filter((entry) => entry.createdBySession?.sessionId === owner &&
+      ACTIVE_STATUSES.has(entry.status));
     return {
       action: "list",
       sessions: value.sessions,
       workers: workers.map((entry) => withAcceptance(entry, owner)),
+      concurrency: {
+        limit,
+        active: active.length,
+        activeSessionIds: active.map((entry) => entry.sessionId),
+      },
     };
   }
 
@@ -230,7 +296,12 @@ function createActions(runtime) {
   async function supervise(args, ctx) {
     contextSessionId(ctx);
     const ids = selectedSessionIds(args, true);
-    if (ids.length > 4) throw taskError("LIMIT_EXCEEDED", "Select at most four sessions for supervise");
+    // The delivered batch is bounded by the configured worker ceiling rather than
+    // a fixed four, so one supervise call can address a full review round.
+    const limit = concurrencyLimit(await runtime.settings({ signal: ctx.signal }));
+    if (ids.length > limit) {
+      throw taskError("LIMIT_EXCEEDED", `Select at most ${limit} sessions for supervise`, { limit });
+    }
     text(args.message, "message", 65_536);
     deliveryOptions(args);
     if (args.idempotencyKey) throw taskError("INVALID_ARGUMENT", "Use send with a distinct idempotencyKey for each session");

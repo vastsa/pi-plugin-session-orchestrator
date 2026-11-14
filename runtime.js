@@ -7,6 +7,19 @@ const MAX_WAIT_TIMEOUT_MS = 45_000;
 const WAIT_TIMEOUT_MS = 25_000;
 const POLL_INTERVAL_MS = 1_000;
 const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled", "interrupted"]);
+// How many workers may run at once is a plugin preference, not a host rule:
+// the host records creator provenance and refuses only worker recursion.
+const DEFAULT_MAX_CONCURRENT_SESSIONS = 8;
+const MAX_CONCURRENT_SESSIONS_CEILING = 32;
+const ACTIVE_STATUSES = new Set(["running", "queued", "waiting_permission"]);
+
+/** A number/string settings value, clamped to a sane worker ceiling. */
+function concurrencyLimit(settings) {
+  const raw = settings?.maxConcurrentSessions;
+  const value = typeof raw === "string" && raw.trim() ? Number(raw) : raw;
+  if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_MAX_CONCURRENT_SESSIONS;
+  return Math.min(MAX_CONCURRENT_SESSIONS_CEILING, Math.max(1, Math.trunc(value)));
+}
 
 function taskError(code, message, details) {
   return Object.assign(new Error(message), { code, ...(details ? { details } : {}) });
@@ -161,6 +174,7 @@ function createRuntime(store, api = pi) {
     invoke,
     call: (action, input, options) => invoke(PREFIX + action, input, options),
     models: (options) => bounded(() => api.models.list(), options),
+    settings: (options) => bounded(() => api.plugin.getSettings(), options),
     remember,
     async sleep(ms, options) {
       let timer;
@@ -177,12 +191,16 @@ function createRuntime(store, api = pi) {
 }
 
 module.exports = {
+  ACTIVE_STATUSES,
+  DEFAULT_MAX_CONCURRENT_SESSIONS,
+  MAX_CONCURRENT_SESSIONS_CEILING,
   MAX_SELECTED_SESSIONS,
   MAX_WAIT_TIMEOUT_MS,
   WAIT_TIMEOUT_MS,
   POLL_INTERVAL_MS,
   PREFIX,
   TERMINAL_STATUSES,
+  concurrencyLimit,
   contextSessionId,
   createRuntime,
   deliveryOptions,
